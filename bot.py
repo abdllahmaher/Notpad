@@ -1,4 +1,9 @@
+
 # import os
+# import threading
+# import time
+# import requests
+# from datetime import datetime
 # from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 # from telegram.ext import (
 #     ApplicationBuilder,
@@ -24,6 +29,26 @@
 # print(f"✅ Token loaded: {TOKEN[:10]}...")
 # # ============  TOKEN ============
 
+# # ============ KEEP ALIVE FUNCTION ============
+# def get_current_time():
+#     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+# def keep_alive_background():
+#     while True:
+#         try:
+#             app_url = os.environ.get('APP_URL', 'https://your-bot-name.cherno.dev')
+            
+#             try:
+#                 response = requests.get(app_url, timeout=10)
+#                 print(f"[{get_current_time()}] Keep-alive ping sent. Status: {response.status_code}")
+#             except:
+#                 print(f"[{get_current_time()}] Keep-alive ping failed")
+                
+#         except Exception as e:
+#             print(f"[{get_current_time()}] Keep-alive error: {e}")
+        
+#         time.sleep(7200)
+# # ============ END KEEP ALIVE ============
 
 # user_states = {}
 
@@ -532,7 +557,6 @@
 #     )
 
 # def main():
-    
 #     app = ApplicationBuilder().token(TOKEN).build()
     
 #     app.add_handler(CommandHandler("start", start))
@@ -553,6 +577,7 @@
 #     app.add_handler(CommandHandler("clearTodo", clrtsk_cmd))
     
 #     print("Bot is starting...")
+#     print(f"[{get_current_time()}] Keep-alive system activated")
 #     app.run_polling()
 
 # async def note_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -583,14 +608,20 @@
 #     await show_main_menu_direct(update)
 
 # if __name__ == "__main__":
+#     keep_alive_thread = threading.Thread(target=keep_alive_background, daemon=True)
+#     keep_alive_thread.start()
 #     main()
+
+
 import os
 import threading
 import time
 import requests
 from datetime import datetime
+from fastapi import FastAPI, Request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
@@ -602,8 +633,10 @@ from telegram.ext import (
 from notes import add_note, list_notes, delete_note, delete_all
 from todos import add_todo, list_todos, mark_done, delete_task, delete_all_tasks
 
-# ============ TOKEN ============
-TOKEN = os.environ.get('TOKEN')
+# ================= ENV =================
+TOKEN = os.environ.get("TOKEN")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # https://xxx.choreo.dev/webhook
+PORT = int(os.environ.get("PORT", 8000))
 
 if not TOKEN:
     print("❌ ERROR: TOKEN not found!")
@@ -611,32 +644,40 @@ if not TOKEN:
     print("For local: Create .env file with TOKEN=your_token")
     exit(1)
 
-print(f"✅ Token loaded: {TOKEN[:10]}...")
-# ============  TOKEN ============
+if not WEBHOOK_URL:
+    print("⚠️ WARNING: WEBHOOK_URL not set. Webhook won't work properly.")
 
-# ============ KEEP ALIVE FUNCTION ============
+print(f"✅ Token loaded: {TOKEN[:10]}...")
+if WEBHOOK_URL:
+    print(f"✅ Webhook URL: {WEBHOOK_URL}")
+
+# ================= FASTAPI =================
+app = FastAPI()
+bot_app = ApplicationBuilder().token(TOKEN).build()
+
+# ================= KEEP ALIVE FUNCTION =================
 def get_current_time():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 def keep_alive_background():
+    app_url = os.environ.get('APP_URL', '')
+    if not app_url:
+        print(f"[{get_current_time()}] ⚠️ APP_URL not set, keep-alive disabled")
+        return
+    
     while True:
         try:
-            app_url = os.environ.get('APP_URL', 'https://your-bot-name.cherno.dev')
-            
-            try:
-                response = requests.get(app_url, timeout=10)
-                print(f"[{get_current_time()}] Keep-alive ping sent. Status: {response.status_code}")
-            except:
-                print(f"[{get_current_time()}] Keep-alive ping failed")
-                
+            response = requests.get(app_url, timeout=10)
+            print(f"[{get_current_time()}] Keep-alive ping sent. Status: {response.status_code}")
         except Exception as e:
-            print(f"[{get_current_time()}] Keep-alive error: {e}")
+            print(f"[{get_current_time()}] Keep-alive ping failed: {e}")
         
-        time.sleep(7200)
-# ============ END KEEP ALIVE ============
+        time.sleep(300)  # Ping كل 5 دقائق
 
+# ================= USER STATES =================
 user_states = {}
 
+# ================= HANDLERS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📝 Notes", callback_data="menu_notes")],
@@ -658,11 +699,18 @@ Manage your notes and todos efficiently with a beautiful interface!
 Click the buttons below to get started!
 """
     
-    await update.message.reply_text(
-        welcome_text,
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+    if update.message:
+        await update.message.reply_text(
+            welcome_text,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    elif update.callback_query:
+        await update.callback_query.message.reply_text(
+            welcome_text,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1141,58 +1189,91 @@ Need more help? Just explore the menus!
         parse_mode='Markdown'
     )
 
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+# ================= REGISTER HANDLERS =================
+bot_app.add_handler(CommandHandler("start", start))
+bot_app.add_handler(CommandHandler("help", help_command))
+bot_app.add_handler(CallbackQueryHandler(button_callback))
+bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+# ================= WEBHOOK ENDPOINT =================
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    data = await request.json()
+    update = Update.de_json(data, bot_app.bot)
+    await bot_app.process_update(update)
+    return {"ok": True}
+
+# ================= HEALTH CHECK =================
+@app.get("/")
+async def root():
+    return {"status": "online", "service": "Telegram Bot Webhook"}
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "timestamp": get_current_time()}
+
+# ================= STARTUP / SHUTDOWN =================
+@app.on_event("startup")
+async def on_startup():
+    print(f"[{get_current_time()}] Bot is starting up...")
     
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
+    # بدء خيط keep-alive
+    if os.environ.get('APP_URL'):
+        keep_alive_thread = threading.Thread(target=keep_alive_background, daemon=True)
+        keep_alive_thread.start()
+        print(f"[{get_current_time()}] Keep-alive system activated")
     
-    app.add_handler(CallbackQueryHandler(button_callback))
+    # إعداد ويب هوك
+    if WEBHOOK_URL:
+        try:
+            await bot_app.bot.delete_webhook()  # تنظيف أي ويب هوك سابق
+            await bot_app.initialize()
+            await bot_app.start()
+            
+            webhook_info = await bot_app.bot.get_webhook_info()
+            print(f"[{get_current_time()}] Current webhook: {webhook_info.url}")
+            
+            await bot_app.bot.set_webhook(
+                url=WEBHOOK_URL,
+                drop_pending_updates=True
+            )
+            print(f"[{get_current_time()}] Webhook set to: {WEBHOOK_URL}")
+            
+            # اختبار البوت
+            bot_info = await bot_app.bot.get_me()
+            print(f"[{get_current_time()}] Bot started: @{bot_info.username}")
+            
+        except Exception as e:
+            print(f"[{get_current_time()}] Error setting webhook: {e}")
+    else:
+        print(f"[{get_current_time()}] ⚠️ WEBHOOK_URL not set, webhook disabled")
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    print(f"[{get_current_time()}] Bot is shutting down...")
     
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    app.add_handler(CommandHandler("note", note_cmd))
-    app.add_handler(CommandHandler("notes", notes_cmd))
-    app.add_handler(CommandHandler("todo", todo_cmd))
-    app.add_handler(CommandHandler("todos", todos_cmd))
-    app.add_handler(CommandHandler("done", done_cmd))
-    app.add_handler(CommandHandler("deleteNote", dlnt_cmd))
-    app.add_handler(CommandHandler("deleteTask", dltsk_cmd))
-    app.add_handler(CommandHandler("clearNotes", clrnt_cmd))
-    app.add_handler(CommandHandler("clearTodo", clrtsk_cmd))
-    
-    print("Bot is starting...")
-    print(f"[{get_current_time()}] Keep-alive system activated")
-    app.run_polling()
+    try:
+        if WEBHOOK_URL:
+            await bot_app.bot.delete_webhook()
+            print(f"[{get_current_time()}] Webhook deleted")
+        
+        await bot_app.stop()
+        await bot_app.shutdown()
+        print(f"[{get_current_time()}] Bot stopped successfully")
+    except Exception as e:
+        print(f"[{get_current_time()}] Error during shutdown: {e}")
 
-async def note_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await show_main_menu_direct(update)
-
-async def notes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await show_main_menu_direct(update)
-
-async def todo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await show_main_menu_direct(update)
-
-async def todos_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await show_main_menu_direct(update)
-
-async def done_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await show_main_menu_direct(update)
-
-async def dlnt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await show_main_menu_direct(update)
-
-async def dltsk_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await show_main_menu_direct(update)
-
-async def clrnt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await show_main_menu_direct(update)
-
-async def clrtsk_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await show_main_menu_direct(update)
-
+# ================= MAIN =================
 if __name__ == "__main__":
-    keep_alive_thread = threading.Thread(target=keep_alive_background, daemon=True)
-    keep_alive_thread.start()
-    main()
+    import uvicorn
+    
+    print(f"[{get_current_time()}] Starting FastAPI server on port {PORT}")
+    print(f"[{get_current_time()}] Webhook URL: {WEBHOOK_URL}")
+    print(f"[{get_current_time()}] Bot Token: {TOKEN[:10]}...")
+    
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=PORT,
+        log_level="info"
+    )
