@@ -1,75 +1,59 @@
-# from storage import load_data, save_data
+# notes.py
+from database import get_db_connection
 
-# def add_note(user_id, text):
-#     data = load_data()
-#     user = data.setdefault(str(user_id), {"notes": [], "todos": []})
-#     user["notes"].append(text)
-#     save_data(data)
-
-# def list_notes(user_id):
-#     data = load_data()
-#     return data.get(str(user_id), {}).get("notes", [])
-
-# def delete_note(user_id, index):
-#     data = load_data()
-#     user = data.get(str(user_id))
-    
-#     if not user:
-#         return False
-    
-#     notes = user.get("notes", [])
-#     if index is None or not (0 < index <= len(notes)):
-#         return False
-#     if user["notes"][index-1]==[]:
-#         return False
-#     user["notes"].pop(index-1)
-    
-#     save_data(data)
-#     return True
-
-
-# def delete_all(user_id):
-#     data = load_data()
-#     user = data.get(str(user_id))
-    
-#     if not user:
-#         return False
-#     if user["notes"] == []:
-#         return False
-#     user["notes"] = []
-#     save_data(data)
-#     return True
-
-from mongo_storage import db
-
-def add_note(user_id, text):
-    db.add_note(user_id, text)
+def add_note(user_id, note_text):
+    """Add a new note for the user."""
+    try:
+        with get_db_connection() as conn:
+            conn.execute(
+                "INSERT INTO notes (user_id, note) VALUES (?, ?)",
+                (str(user_id), note_text)
+            )
+        return True
+    except Exception as e:
+        print(f"❌ Error adding note: {e}")
+        return False
 
 def list_notes(user_id):
-    return db.get_notes(user_id)
+    """Get all notes for a user, newest first."""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.execute(
+                "SELECT note FROM notes WHERE user_id = ? ORDER BY created_at DESC",
+                (str(user_id),)
+            )
+            return [row['note'] for row in cursor.fetchall()]
+    except Exception as e:
+        print(f"❌ Error listing notes: {e}")
+        return []
 
-def delete_note(user_id, index):
-    return db.delete_note(user_id, index)
+def delete_note(user_id, note_index):
+    """Delete a specific note by its position in the list."""
+    notes = list_notes(user_id)
+    
+    if 1 <= note_index <= len(notes):
+        note_to_delete = notes[note_index - 1]
+        try:
+            with get_db_connection() as conn:
+                conn.execute(
+                    "DELETE FROM notes WHERE user_id = ? AND note = ? LIMIT 1",
+                    (str(user_id), note_to_delete)
+                )
+            return True
+        except Exception as e:
+            print(f"❌ Error deleting note: {e}")
+    
+    return False
 
 def delete_all(user_id):
-    # Note: For MongoDB, we'll delete all notes for user
-    # This is a simple implementation
-    notes = list_notes(user_id)
-    if not notes:
-        return False
-    
-    # Delete one by one (for now)
-    user_id = str(user_id)
+    """Delete all notes for a user."""
     try:
-        from mongo_storage import db
-        if db.use_mongo:
-            db.db.notes.delete_many({"user_id": user_id})
-            return True
-        else:
-            # Local fallback
-            if user_id in db.local_data:
-                db.local_data[user_id]['notes'] = []
-                return True
-    except:
-        pass
-    return False
+        with get_db_connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM notes WHERE user_id = ?",
+                (str(user_id),)
+            )
+            return cursor.rowcount > 0
+    except Exception as e:
+        print(f"❌ Error deleting all notes: {e}")
+        return False
